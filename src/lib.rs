@@ -1,12 +1,41 @@
 
+use wgpu::util::DeviceExt;
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
+use bytemuck::{Zeroable, Pod};
 
 #[cfg(target_arch="wasm32")]
 use wasm_bindgen::prelude::*;
+
+const CLEAR_COLOUR: wgpu::Color = wgpu::Color {r: 0.1, g: 0.2, b: 0.3, a: 0.5 };
+const VERTICES: &[Vertex] = &[
+    Vertex{ position: [0.0, 0.5, 0.0], color: [1.0, 0.0, 0.0]},
+    Vertex{ position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0]},
+    Vertex{ position: [0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0]}
+];
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Zeroable, Pod)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+impl Vertex {
+    const ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+    
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBS,
+        }
+        
+    }
+}
+
 
 #[cfg_attr(target_arch="wasm32", wasm_bindgen(start))]
 pub async fn run() {
@@ -106,11 +135,11 @@ struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
-    // The window must be declared after the surface so
-    // it gets dropped after it as the surface contains
-    // unsafe references to the window's resources.
     window: Window,
+
     render_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    num_vertices: u32,
 }
 
 impl State {
@@ -186,7 +215,9 @@ impl State {
             vertex: wgpu::VertexState { 
                 module: &shader, 
                 entry_point: "vs_main", 
-                buffers: &[] 
+                buffers: &[
+                    Vertex::desc(),
+                ] 
             }, 
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: "fs_main", targets: &[
                 Some(wgpu::ColorTargetState { format: config.format, blend: Some(wgpu::BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL })
@@ -212,6 +243,13 @@ impl State {
             multiview: None
         });
 
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: wgpu::BufferUsages::VERTEX
+        });
+        let num_vertices = VERTICES.len() as u32;
+
         Self {
             surface,
             device,
@@ -220,6 +258,8 @@ impl State {
             config,
             size,
             render_pipeline,
+            vertex_buffer,
+            num_vertices
         }
     }
 
@@ -250,18 +290,21 @@ impl State {
             label: Some("Render Ecoder")
         });
 
+        // setup render pass
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { 
                 label: Some("Render Pass"), 
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { 
                     view: &view, 
                     resolve_target: None, 
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.2, b: 0.3, a: 1.0 }), store: wgpu::StoreOp::Store } 
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(CLEAR_COLOUR), store: wgpu::StoreOp::Store } 
                 })],
                 depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None });
 
                 render_pass.set_pipeline(&self.render_pipeline);
-                render_pass.draw(0..3, 0..1)
+
+                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                render_pass.draw(0..self.num_vertices, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
